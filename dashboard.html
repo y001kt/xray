@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+  XRayVision
+  Copyright (C) 2025 Costin Stroie <costinstroie@eridu.eu.org>
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  any later version.
+-->
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XRayVision Dashboard</title>
+    <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@1.5.10/css/pico.min.css">
+    <style>
+        body {
+            background-color: #121212;
+            color: white;
+        }
+
+        h1,
+        h2 {
+            color: #4fc3f7;
+        }
+
+        .image-card {
+            padding: 1rem;
+            border: 1px solid #0d6efd;
+            border-radius: 0.5rem;
+            background-color: #1e1e2f;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 1rem;
+        }
+
+        .image-card img {
+            cursor: pointer;
+            max-width: 100px;
+            border: 1px solid #4fc3f7;
+        }
+
+        .positive img {
+            border: 1px solid #00ff00;
+        }
+
+        .flagged img {
+            border: 1px solid #ff0000;
+        }
+
+        .image-card .text {
+            word-break: break-word;
+        }
+
+        .positive .report {
+            color: #4fc3f7;
+            font-weight: bold;
+        }
+
+        .positive {
+            background-color: #003b00;
+            border: 1px solid #00ff00;
+        }
+
+        .positive button {
+            background-color: #4caf50;
+            border-color: #00ff00;
+            color: white;
+        }
+
+        .flagged {
+            background-color: #3b0000;
+            border: 1px solid #ff0000;
+        }
+
+        .flagged button {
+            background-color: #ff4c4c;
+            border-color: #ff0000;
+            color: white;
+        }
+
+        .lightbox {
+            display: none;
+            position: fixed;
+            z-index: 999;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.9);
+            text-align: center;
+            padding-top: 60px;
+            color: white;
+        }
+
+        .lightbox.flagged {
+            background-color: rgba(128, 0, 0, 0.9);
+        }
+
+        .lightbox.positive {
+            background-color: rgba(0, 128, 0, 0.9);
+        }
+
+        .lightbox img {
+            max-width: 90%;
+            max-height: 80%;
+            margin-bottom: 1rem;
+            border: 1px solid #4fc3f7;
+            border-radius: 0.5rem;
+        }
+
+        .lightbox.flagged img {
+            border: 1px solid #ff0000;
+        }
+
+        .lightbox.positive img {
+            border: 1px solid #00ff00;
+        }
+
+        .lightbox .lightbox-text {
+            font-size: 1.2rem;
+        }
+    </style>
+</head>
+
+<body class="container">
+    <h1>📊 XRayVision Processing Dashboard</h1>
+
+    <div class="grid">
+        <article><strong>Queue Size:</strong><br><span id="queue">0</span></article>
+        <article><strong>Currently Processing:</strong><br><span id="processing">Idle</span></article>
+        <article><strong>Successful Uploads:</strong><br><span id="success">0</span></article>
+        <article><strong>Failed Uploads:</strong><br><span id="failure">0</span></article>
+    </div>
+
+    <form>
+        <fieldset role="group">
+            <label for="queryInterval">Query Time Span (hours):</label>
+            <select id="queryInterval">
+                <option value="1">1</option>
+                <option value="3" selected>3</option>
+                <option value="6">6</option>
+                <option value="12">12</option>
+                <option value="24">24</option>
+            </select>
+            <button onclick="triggerQuery()">Trigger QueryRetrieve Now</button>
+        </fieldset>
+    </form>
+
+    <h2>Last Processed Files</h2>
+    <div id="history"></div>
+
+    <div id="lightbox" class="lightbox">
+        <img id="lightbox-img" src="">
+        <div id="lightbox-text" class="lightbox-text"></div>
+    </div>
+
+    <script>
+        let ws;
+
+        function sanitize(text) {
+            return text.replace(/&/g, "\&amp;")
+                       .replace(/</g, "\&lt;")
+                       .replace(/>/g, "\&gt;")
+                       .replace(/"/g, "\&quot;")
+                       .replace(/'/g, "\&#039;");
+        }
+
+        function connectWebSocket() {
+            ws = new WebSocket("ws://" + window.location.host + "/ws");
+
+            ws.onopen = function () {
+                console.log("WebSocket connected to " + window.location.host);
+            };
+
+            ws.onmessage = function (event) {
+                let data = JSON.parse(event.data);
+
+                document.getElementById('queue').innerHTML = data.queue_size;
+                document.getElementById('processing').innerHTML = data.processing_file || 'Idle';
+                document.getElementById('success').innerHTML = data.success_count;
+                document.getElementById('failure').innerHTML = data.failure_count;
+
+                let historyHtml = '';
+                data.history.forEach(item => {
+                    let isPositive = item.text.trim().toLowerCase().startsWith('yes');
+
+                    let date = item.meta.series.date;
+                    let time = item.meta.series.time;
+                    let formattedDate = `${date.substring(0,4)}-${date.substring(4,6)}-${date.substring(6,8)}`;
+                    let formattedTime = `${time.substring(0,2)}:${time.substring(2,4)}:${time.substring(4,6)}`;
+
+                    let patientNameParts = item.meta.patient.name.split('^');
+                    let formattedPatientName = patientNameParts.length > 1 ? `${patientNameParts[0]}, ${patientNameParts[1]}` : item.meta.patient.name;
+
+                    let isFlagged = item.flagged;
+                    let flaggedClass = isFlagged ? 'flagged' : '';
+                    let positiveClass = isPositive ? 'positive' : '';
+                    let buttonLabel = isFlagged ? 'Wrong' : 'Correct';
+
+                    historyHtml += `
+                        <div class="image-card ${positiveClass} ${flaggedClass}" id="card-${item.file}">
+                            <img src="/static/${item.file}" alt="Processed Image" onclick="openLightbox('/static/${item.file}', '${sanitize(formattedPatientName)}', '${sanitize(item.text)}', ${isFlagged}, ${isPositive})">
+                            <div class="text">
+                                <strong>${formattedPatientName}</strong><br>
+                                <span>${item.meta.patient.id}</span><br>
+                                <span>${formattedDate} ${formattedTime}</span><br>
+                                <span>${item.meta.series.desc}</span><br>
+                                <span class="report">${item.text}</span><br>
+                                <button onclick="toggleFlag('${item.file}')">${buttonLabel}</button>
+                            </div>
+                        </div>
+                    `;
+                });
+                document.getElementById('history').innerHTML = historyHtml;
+            };
+
+            ws.onclose = function () {
+                console.warn("WebSocket closed. Attempting reconnect in 5 seconds...");
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = function (error) {
+                console.error("WebSocket error: ", error);
+                ws.close();
+            };
+        }
+
+        function toggleFlag(file) {
+            fetch('/toggle_flag', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ file: file })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Status update:', data.flagged ? 'wrong' : 'correct');
+            })
+            .catch(error => {
+                console.error('Error toggling flag:', error);
+            });
+        }
+
+        function triggerQuery() {
+            const hours = document.getElementById('queryInterval').value;
+            fetch('/trigger_query', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hours: hours })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Query triggered:', data);
+            })
+            .catch(error => {
+                console.error('Error triggering query:', error);
+            });
+        }
+
+        function openLightbox(imageSrc, patientName, description, isFlagged, isPositive) {
+            const lightbox = document.getElementById('lightbox');
+            const lightboxImg = document.getElementById('lightbox-img');
+            document.getElementById('lightbox-text').innerHTML = `<strong>${patientName}</strong><br>${description}`;
+            lightboxImg.src = imageSrc;
+
+            lightbox.classList.remove('flagged', 'positive');
+
+            if (isFlagged) {
+                lightbox.classList.add('flagged');
+            } else if (isPositive) {
+                lightbox.classList.add('positive');
+            }
+
+            lightbox.style.display = 'block';
+        }
+
+        document.getElementById('lightbox').addEventListener('click', function () {
+            this.style.display = 'none';
+        });
+
+        connectWebSocket();
+    </script>
+</body>
+
+</html>
